@@ -44,7 +44,6 @@ function connectTikTok() {
   });
 
   tiktok.on('gift', data => {
-    // Only broadcast when gift combo ends
     if (data.giftType === 1 && !data.repeatEnd) return;
     broadcast({
       type: 'gift',
@@ -63,35 +62,6 @@ function connectTikTok() {
 
   tiktok.on('error', err => {
     console.warn('TikTok error:', err.message);
-  });
-}
-
-wss.on('connection', ws => {
-  clients.add(ws);
-  console.log(`Client connected. Total: ${clients.size}`);
-  ws.on('close', () => {
-    clients.delete(ws);
-    console.log(`Client disconnected. Total: ${clients.size}`);
-  });
-});
-
-connectTikTok();    });
-  });
-
-  tiktok.on('gift', data => {
-    if (data.giftType === 1 && !data.repeatEnd) return;
-    broadcast({
-      type: 'gift',
-      username: data.uniqueId,
-      nickname: data.nickname,
-      giftName: data.giftName,
-      repeatCount: data.repeatCount,
-    });
-  });
-
-  tiktok.on('disconnected', () => {
-    console.warn('TikTok disconnected, retrying in 30s');
-    setTimeout(connectTikTok, 30000);
   });
 }
 
