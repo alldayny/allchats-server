@@ -13,13 +13,14 @@ let retryTimeout = null;
 
 function broadcast(data) {
   const msg = JSON.stringify(data);
-  clients.forEach(ws => { try { ws.send(msg); } catch(e) {} });
+  clients.forEach(ws => {
+    try { ws.send(msg); } catch(e) {}
+  });
 }
 
 function connectTikTok() {
   clearTimeout(retryTimeout);
-  console.log(`Connecting to TikTok: ${TIKTOK_USERNAME}`);
-
+  console.log('Connecting to TikTok: ' + TIKTOK_USERNAME);
   let tiktok;
   try {
     tiktok = new WebcastPushConnection(TIKTOK_USERNAME, {
@@ -35,81 +36,63 @@ function connectTikTok() {
   }
 
   tiktok.connect()
-    .then(() => { console.log('TikTok connected!'); })
-    .catch(err => {
-      const msg = err?.message || String(err) || 'unknown error';
-      console.warn(`TikTok not available (${msg}), retrying in 60s`);
+    .then(function() {
+      console.log('TikTok connected!');
+    })
+    .catch(function(err) {
+      var msg = (err && err.message) ? err.message : 'unknown';
+      console.warn('TikTok not available (' + msg + '), retrying in 60s');
       try { tiktok.disconnect(); } catch(e) {}
       retryTimeout = setTimeout(connectTikTok, 60000);
     });
 
-  tiktok.on('chat', data => {
-    broadcast({ type:'chat', username:data.uniqueId, nickname:data.nickname, comment:data.comment });
-  });
-
-  tiktok.on('gift', data => {
-    if (data.giftType === 1 && !data.repeatEnd) return;
-    broadcast({ type:'gift', username:data.uniqueId, nickname:data.nickname, giftName:data.giftName, repeatCount:data.repeatCount||1, diamondCount:data.diamondCount||0 });
-  });
-
-  tiktok.on('disconnected', () => {
-    console.warn('TikTok disconnected, retrying in 60s');
-    retryTimeout = setTimeout(connectTikTok, 60000);
-  });
-
-  tiktok.on('error', err => {
-    const msg = err?.message || String(err) || 'unknown';
-    console.warn(`TikTok error: ${msg}`);
-  });
-}
-
-wss.on('connection', ws => {
-  clients.add(ws);
-  console.log(`Client connected. Total: ${clients.size}`);
-  ws.on('close', () => { clients.delete(ws); console.log(`Client disconnected. Total: ${clients.size}`); });
-});
-
-// Wrap entire startup in try/catch so nothing can crash the process
-process.on('uncaughtException', err => { console.warn('Uncaught exception:', err?.message || err); });
-process.on('unhandledRejection', err => { console.warn('Unhandled rejection:', err?.message || err); });
-
-connectTikTok();  tiktok.connect()
-    .then(() => { console.log('TikTok connected!'); })
-    .catch(err => {
-      const msg = err?.message || String(err) || 'unknown error';
-      console.warn(`TikTok not available (${msg}), retrying in 60s`);
-      try { tiktok.disconnect(); } catch(e) {}
-      retryTimeout = setTimeout(connectTikTok, 60000);
+  tiktok.on('chat', function(data) {
+    broadcast({
+      type: 'chat',
+      username: data.uniqueId,
+      nickname: data.nickname,
+      comment: data.comment
     });
-
-  tiktok.on('chat', data => {
-    broadcast({ type:'chat', username:data.uniqueId, nickname:data.nickname, comment:data.comment });
   });
 
-  tiktok.on('gift', data => {
+  tiktok.on('gift', function(data) {
     if (data.giftType === 1 && !data.repeatEnd) return;
-    broadcast({ type:'gift', username:data.uniqueId, nickname:data.nickname, giftName:data.giftName, repeatCount:data.repeatCount||1, diamondCount:data.diamondCount||0 });
+    broadcast({
+      type: 'gift',
+      username: data.uniqueId,
+      nickname: data.nickname,
+      giftName: data.giftName,
+      repeatCount: data.repeatCount || 1,
+      diamondCount: data.diamondCount || 0
+    });
   });
 
-  tiktok.on('disconnected', () => {
+  tiktok.on('disconnected', function() {
     console.warn('TikTok disconnected, retrying in 60s');
     retryTimeout = setTimeout(connectTikTok, 60000);
   });
 
-  tiktok.on('error', err => {
-    const msg = err?.message || String(err) || 'unknown';
-    console.warn(`TikTok error: ${msg}`);
+  tiktok.on('error', function(err) {
+    var msg = (err && err.message) ? err.message : 'unknown';
+    console.warn('TikTok error: ' + msg);
   });
 }
 
-wss.on('connection', ws => {
-  clients.add(ws);
-  console.log(`Client connected. Total: ${clients.size}`);
-  ws.on('close', () => { clients.delete(ws); console.log(`Client disconnected. Total: ${clients.size}`); });
+process.on('uncaughtException', function(err) {
+  console.warn('Uncaught exception: ' + ((err && err.message) ? err.message : err));
 });
 
-// Wrap entire startup in try/catch so nothing can crash the process
-process.on('uncaughtException', err => { console.warn('Uncaught exception:', err?.message || err); });
-process.on('unhandledRejection', err => { console.warn('Unhandled rejection:', err?.message || err); });
+process.on('unhandledRejection', function(err) {
+  console.warn('Unhandled rejection: ' + ((err && err.message) ? err.message : err));
+});
+
+wss.on('connection', function(ws) {
+  clients.add(ws);
+  console.log('Client connected. Total: ' + clients.size);
+  ws.on('close', function() {
+    clients.delete(ws);
+    console.log('Client disconnected. Total: ' + clients.size);
+  });
+});
 
 connectTikTok();
