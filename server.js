@@ -1,8 +1,8 @@
-import { WebSocketServer } from 'ws';
-import { TikTokLiveConnection, WebcastEvent, ControlEvent } from 'tiktok-live-connector';
+const { WebcastPushConnection } = require('tiktok-live-connector');
+const { WebSocketServer } = require('ws');
 
-const PORT = process.env.PORT || 8080;
 const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || 'alldaynyc';
+const PORT = process.env.PORT || 8080;
 const EULER_API_KEY = process.env.EULER_API_KEY || '';
 
 const wss = new WebSocketServer({ port: PORT });
@@ -13,7 +13,8 @@ let retryTimeout = null;
 let tiktok = null;
 
 function broadcast(data) {
-  const msg = JSON.stringify(data);
+  var msg = JSON.stringify(data);
+  console.log('Broadcasting:', msg.substring(0, 100));
   clients.forEach(function(ws) {
     try { ws.send(msg); } catch(e) {}
   });
@@ -22,9 +23,13 @@ function broadcast(data) {
 function connectTikTok() {
   clearTimeout(retryTimeout);
   console.log('Connecting to TikTok: ' + TIKTOK_USERNAME);
+
   try {
-    tiktok = new TikTokLiveConnection(TIKTOK_USERNAME, {
-      signApiKey: EULER_API_KEY || undefined
+    tiktok = new WebcastPushConnection(TIKTOK_USERNAME, {
+      signProviderOptions: {
+        url: 'https://tiktok.eulerstream.com/webcast/sign_url',
+        params: { apiKey: EULER_API_KEY }
+      }
     });
   } catch(e) {
     console.warn('Failed to create TikTok connection: ' + e.message);
@@ -32,72 +37,120 @@ function connectTikTok() {
     return;
   }
 
-  tiktok.on(ControlEvent.CONNECTED, (state) => {
-    console.log('TikTok connected! roomId: ' + state.roomId);
-    broadcast({ type: 'tiktok_connected' });
-  });
-
-  tiktok.on(ControlEvent.DISCONNECTED, ({ code, reason }) => {
-    console.log('TikTok disconnected (' + code + '): ' + (reason || ''));
-    broadcast({ type: 'tiktok_disconnected' });
-    retryTimeout = setTimeout(connectTikTok, 30000);
-  });
-
-  tiktok.on(ControlEvent.ERROR, (err) => {
-    console.error('TikTok error:', err.message || err);
-  });
-
-  tiktok.on(WebcastEvent.CHAT, (data) => {
-    const uniqueId = data.user?.uniqueId || 'unknown';
-    const nickname = data.user?.nickname || uniqueId;
-    const comment = data.comment || '';
-    console.log('[CHAT] ' + nickname + ': ' + comment);
-    broadcast({
-      type: 'chat',
-      platform: 'tiktok',
-      uniqueId,
-      nickname,
-      comment,
-      profilePictureUrl: data.user?.profilePictureUrl || null
-    });
-  });
-
-  tiktok.on(WebcastEvent.GIFT, (data) => {
-    const giftType = data.giftDetails?.giftType;
-    if (giftType === 1 && !data.repeatEnd) return;
-    const coinCost = data.giftDetails?.diamondCount || 0;
-    if (coinCost < 25) return;
-    const uniqueId = data.user?.uniqueId || 'unknown';
-    const nickname = data.user?.nickname || uniqueId;
-    const giftName = data.giftDetails?.giftName || 'Gift';
-    console.log('[GIFT] ' + nickname + ' sent ' + giftName + ' (' + coinCost + ' coins)');
-    broadcast({
-      type: 'gift',
-      platform: 'tiktok',
-      uniqueId,
-      nickname,
-      giftName,
-      coinCost,
-      repeatCount: data.repeatCount || 1,
-      profilePictureUrl: data.user?.profilePictureUrl || null
-    });
-  });
-
   tiktok.connect()
-    .then(state => console.log('TikTok connected to roomId: ' + (state && state.roomId)))
-    .catch(err => {
-      console.error('TikTok connection failed:', err.message || err);
+    .then(function() {
+      console.log('TikTok connected!');
+    })
+    .catch(function(err) {
+      var msg = (err && err.message) ? err.message : 'unknown';
+      console.warn('TikTok connect failed (' + msg + '), retrying in 60s');
+      try { tiktok.disconnect(); } catch(e) {}
+      tiktok = null;
       retryTimeout = setTimeout(connectTikTok, 60000);
     });
+
+  tiktok.on('chat', function(data) {
+    try {
+      console.log('Chat event raw:', JSON.stringify(data).substring(0, 200));
+      // Handle all possible v1/v2 data shapes
+      var nickname = '';
+      var uniqueId = '';
+      var comment = '';
+
+      // v2 shape
+      if (data && data.user) {
+        nickname = data.user.nickname || data.user.uniqueId || '';
+        uniqueId = data.user.uniqueId || '';
+      }
+      // v1 shape  
+      if (!nickname) {
+        nickname = data.nickname || data.uniqueId || 'Unknown';
+        uniqueId = data.uniqueId || '';
+      }
+      // comment
+      if (data.data && data.data.comment) {
+        comment = data.data.comment;
+      } else if (data.comment) {
+        comment = data.comment;
+      }
+
+      broadcast({
+        type: 'chat',
+        username: uniqueId,
+        nickname: nickname,
+        comment: comment
+      });
+    } catch(e) {
+      console.warn('Chat handler error:', e.message);
+    }
+  });
+
+  tiktok.on('gift', function(data) {
+    try {
+      if (data.giftType === 1 && !data.repeatEnd) return;
+      
+      var nickname = (data.user && data.user.nickname) || data.nickname || 'Unknown';
+      var uniqueId = (data.user && data.user.uniqueId) || data.uniqueId || '';
+      var giftName = (data.giftDetails && data.giftDetails.giftName) || data.giftName || 'Gift';
+      var diamondCount = (data.giftDetails && data.giftDetails.diamondCount) || data.diamondCount || 0;
+      var repeatCount = data.repeatCount || 1;
+
+      broadcast({
+        type: 'gift',
+        username: uniqueId,
+        nickname: nickname,
+        giftName: giftName,
+        repeatCount: repeatCount,
+        diamondCount: diamondCount
+      });
+    } catch(e) {
+      console.warn('Gift handler error:', e.message);
+    }
+  });
+
+  tiktok.on('disconnected', function() {
+    console.warn('TikTok disconnected, retrying in 60s');
+    tiktok = null;
+    retryTimeout = setTimeout(connectTikTok, 60000);
+  });
+
+  tiktok.on('error', function(err) {
+    var msg = (err && err.message) ? err.message : 'unknown';
+    console.warn('TikTok error: ' + msg);
+  });
 }
 
 wss.on('connection', function(ws) {
   clients.add(ws);
-  console.log('WebSocket client connected. Total: ' + clients.size);
+  console.log('Client connected. Total: ' + clients.size);
   ws.on('close', function() {
     clients.delete(ws);
-    console.log('WebSocket client disconnected. Total: ' + clients.size);
+    console.log('Client disconnected. Total: ' + clients.size);
   });
+  ws.on('error', function(err) {
+    console.warn('WS client error: ' + err.message);
+    clients.delete(ws);
+  });
+});
+
+wss.on('error', function(err) {
+  console.warn('WSS error: ' + err.message);
+});
+
+process.on('uncaughtException', function(err) {
+  console.warn('Uncaught exception: ' + ((err && err.message) ? err.message : String(err)));
+});
+
+process.on('unhandledRejection', function(reason) {
+  console.warn('Unhandled rejection: ' + ((reason && reason.message) ? reason.message : String(reason)));
+});
+
+process.on('SIGTERM', function() {
+  console.log('SIGTERM received — staying alive');
+});
+
+process.on('SIGINT', function() {
+  console.log('SIGINT received — staying alive');
 });
 
 connectTikTok();
