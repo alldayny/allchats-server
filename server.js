@@ -11,17 +11,28 @@ console.log('WebSocket server running on port ' + PORT);
 let clients = new Set();
 let retryTimeout = null;
 let tiktok = null;
+let isConnected = false;
 
 function broadcast(data) {
   var msg = JSON.stringify(data);
-  console.log('Broadcasting:', msg.substring(0, 100));
   clients.forEach(function(ws) {
     try { ws.send(msg); } catch(e) {}
   });
 }
 
+function destroyTikTok() {
+  if (tiktok) {
+    try { tiktok.removeAllListeners(); } catch(e) {}
+    try { tiktok.disconnect(); } catch(e) {}
+    tiktok = null;
+  }
+  isConnected = false;
+}
+
 function connectTikTok() {
   clearTimeout(retryTimeout);
+  destroyTikTok();
+  
   console.log('Connecting to TikTok: ' + TIKTOK_USERNAME);
 
   try {
@@ -40,40 +51,21 @@ function connectTikTok() {
   tiktok.connect()
     .then(function() {
       console.log('TikTok connected!');
+      isConnected = true;
     })
     .catch(function(err) {
       var msg = (err && err.message) ? err.message : 'unknown';
-      console.warn('TikTok connect failed (' + msg + '), retrying in 60s');
-      try { tiktok.disconnect(); } catch(e) {}
-      tiktok = null;
-      retryTimeout = setTimeout(connectTikTok, 60000);
+      console.warn('TikTok connect failed (' + msg + '), retrying in 30s');
+      destroyTikTok();
+      retryTimeout = setTimeout(connectTikTok, 30000);
     });
 
   tiktok.on('chat', function(data) {
     try {
-      console.log('Chat event raw:', JSON.stringify(data).substring(0, 200));
-      // Handle all possible v1/v2 data shapes
-      var nickname = '';
-      var uniqueId = '';
-      var comment = '';
-
-      // v2 shape
-      if (data && data.user) {
-        nickname = data.user.nickname || data.user.uniqueId || '';
-        uniqueId = data.user.uniqueId || '';
-      }
-      // v1 shape  
-      if (!nickname) {
-        nickname = data.nickname || data.uniqueId || 'Unknown';
-        uniqueId = data.uniqueId || '';
-      }
-      // comment
-      if (data.data && data.data.comment) {
-        comment = data.data.comment;
-      } else if (data.comment) {
-        comment = data.comment;
-      }
-
+      var nickname = (data.user && data.user.nickname) || data.nickname || data.uniqueId || 'Unknown';
+      var uniqueId = (data.user && data.user.uniqueId) || data.uniqueId || '';
+      var comment = (data.data && data.data.comment) || data.comment || '';
+      
       broadcast({
         type: 'chat',
         username: uniqueId,
@@ -88,7 +80,6 @@ function connectTikTok() {
   tiktok.on('gift', function(data) {
     try {
       if (data.giftType === 1 && !data.repeatEnd) return;
-      
       var nickname = (data.user && data.user.nickname) || data.nickname || 'Unknown';
       var uniqueId = (data.user && data.user.uniqueId) || data.uniqueId || '';
       var giftName = (data.giftDetails && data.giftDetails.giftName) || data.giftName || 'Gift';
@@ -109,14 +100,18 @@ function connectTikTok() {
   });
 
   tiktok.on('disconnected', function() {
-    console.warn('TikTok disconnected, retrying in 60s');
-    tiktok = null;
-    retryTimeout = setTimeout(connectTikTok, 60000);
+    console.warn('TikTok stream ended — will reconnect when live again');
+    destroyTikTok();
+    // Retry every 30 seconds waiting for next stream
+    retryTimeout = setTimeout(connectTikTok, 30000);
   });
 
   tiktok.on('error', function(err) {
     var msg = (err && err.message) ? err.message : 'unknown';
     console.warn('TikTok error: ' + msg);
+    // On error, fully destroy and reconnect
+    destroyTikTok();
+    retryTimeout = setTimeout(connectTikTok, 30000);
   });
 }
 
