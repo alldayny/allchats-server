@@ -5,8 +5,8 @@ const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || 'alldaynyc';
 const PORT = process.env.PORT || 8080;
 const EULER_API_KEY = process.env.EULER_API_KEY || '';
 
-const RETRY_NOT_LIVE = 5 * 60 * 1000;  // 5 minutes when not live
-const RETRY_DROPPED  = 30 * 1000;       // 30 seconds if dropped mid-stream
+const RETRY_NOT_LIVE = 5 * 60 * 1000;
+const RETRY_DROPPED  = 30 * 1000;
 
 const wss = new WebSocketServer({ port: PORT });
 console.log('WebSocket server running on port ' + PORT);
@@ -18,6 +18,7 @@ let wasLive = false;
 
 function broadcast(data) {
   var msg = JSON.stringify(data);
+  console.log('Broadcasting:', msg.substring(0, 150));
   clients.forEach(function(ws) {
     try { ws.send(msg); } catch(e) {}
   });
@@ -54,10 +55,15 @@ function connectTikTok() {
     .then(function() {
       console.log('TikTok connected!');
       wasLive = true;
+
+      // Debug — log ALL events to see what v2 actually emits
+      tiktok.on('*', function(eventName, data) {
+        console.log('TikTok event fired:', eventName);
+      });
     })
     .catch(function(err) {
       var msg = (err && err.message) ? err.message : 'unknown';
-      console.warn('TikTok connect failed (' + msg + '), retrying in ' + (wasLive ? '30s' : '5min'));
+      console.warn('TikTok connect failed (' + msg + '), retrying in 5min');
       destroyTikTok();
       wasLive = false;
       retryTimeout = setTimeout(connectTikTok, RETRY_NOT_LIVE);
@@ -68,6 +74,7 @@ function connectTikTok() {
       var nickname = (data.user && data.user.nickname) || data.nickname || data.uniqueId || 'Unknown';
       var uniqueId = (data.user && data.user.uniqueId) || data.uniqueId || '';
       var comment = (data.data && data.data.comment) || data.comment || '';
+      console.log('Chat received from:', nickname, ':', comment);
       broadcast({ type: 'chat', username: uniqueId, nickname: nickname, comment: comment });
     } catch(e) { console.warn('Chat handler error:', e.message); }
   });
@@ -85,9 +92,8 @@ function connectTikTok() {
   });
 
   tiktok.on('disconnected', function() {
-    console.warn('TikTok stream ended — retrying in 30s');
+    console.warn('TikTok stream ended — retrying');
     destroyTikTok();
-    // Use fast retry if we were just live, slow if not
     var delay = wasLive ? RETRY_DROPPED : RETRY_NOT_LIVE;
     wasLive = false;
     retryTimeout = setTimeout(connectTikTok, delay);
