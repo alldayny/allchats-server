@@ -5,13 +5,16 @@ const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || 'alldaynyc';
 const PORT = process.env.PORT || 8080;
 const EULER_API_KEY = process.env.EULER_API_KEY || '';
 
+const RETRY_NOT_LIVE = 5 * 60 * 1000;  // 5 minutes when not live
+const RETRY_DROPPED  = 30 * 1000;       // 30 seconds if dropped mid-stream
+
 const wss = new WebSocketServer({ port: PORT });
 console.log('WebSocket server running on port ' + PORT);
 
 let clients = new Set();
 let retryTimeout = null;
 let tiktok = null;
-let isConnected = false;
+let wasLive = false;
 
 function broadcast(data) {
   var msg = JSON.stringify(data);
@@ -26,13 +29,12 @@ function destroyTikTok() {
     try { tiktok.disconnect(); } catch(e) {}
     tiktok = null;
   }
-  isConnected = false;
 }
 
 function connectTikTok() {
   clearTimeout(retryTimeout);
   destroyTikTok();
-  
+
   console.log('Connecting to TikTok: ' + TIKTOK_USERNAME);
 
   try {
@@ -44,20 +46,21 @@ function connectTikTok() {
     });
   } catch(e) {
     console.warn('Failed to create TikTok connection: ' + e.message);
-    retryTimeout = setTimeout(connectTikTok, 60000);
+    retryTimeout = setTimeout(connectTikTok, RETRY_NOT_LIVE);
     return;
   }
 
   tiktok.connect()
     .then(function() {
       console.log('TikTok connected!');
-      isConnected = true;
+      wasLive = true;
     })
     .catch(function(err) {
       var msg = (err && err.message) ? err.message : 'unknown';
-      console.warn('TikTok connect failed (' + msg + '), retrying in 30s');
+      console.warn('TikTok connect failed (' + msg + '), retrying in ' + (wasLive ? '30s' : '5min'));
       destroyTikTok();
-      retryTimeout = setTimeout(connectTikTok, 30000);
+      wasLive = false;
+      retryTimeout = setTimeout(connectTikTok, RETRY_NOT_LIVE);
     });
 
   tiktok.on('chat', function(data) {
@@ -65,16 +68,8 @@ function connectTikTok() {
       var nickname = (data.user && data.user.nickname) || data.nickname || data.uniqueId || 'Unknown';
       var uniqueId = (data.user && data.user.uniqueId) || data.uniqueId || '';
       var comment = (data.data && data.data.comment) || data.comment || '';
-      
-      broadcast({
-        type: 'chat',
-        username: uniqueId,
-        nickname: nickname,
-        comment: comment
-      });
-    } catch(e) {
-      console.warn('Chat handler error:', e.message);
-    }
+      broadcast({ type: 'chat', username: uniqueId, nickname: nickname, comment: comment });
+    } catch(e) { console.warn('Chat handler error:', e.message); }
   });
 
   tiktok.on('gift', function(data) {
@@ -85,33 +80,24 @@ function connectTikTok() {
       var giftName = (data.giftDetails && data.giftDetails.giftName) || data.giftName || 'Gift';
       var diamondCount = (data.giftDetails && data.giftDetails.diamondCount) || data.diamondCount || 0;
       var repeatCount = data.repeatCount || 1;
-
-      broadcast({
-        type: 'gift',
-        username: uniqueId,
-        nickname: nickname,
-        giftName: giftName,
-        repeatCount: repeatCount,
-        diamondCount: diamondCount
-      });
-    } catch(e) {
-      console.warn('Gift handler error:', e.message);
-    }
+      broadcast({ type: 'gift', username: uniqueId, nickname: nickname, giftName: giftName, repeatCount: repeatCount, diamondCount: diamondCount });
+    } catch(e) { console.warn('Gift handler error:', e.message); }
   });
 
   tiktok.on('disconnected', function() {
-    console.warn('TikTok stream ended — will reconnect when live again');
+    console.warn('TikTok stream ended — retrying in 30s');
     destroyTikTok();
-    // Retry every 30 seconds waiting for next stream
-    retryTimeout = setTimeout(connectTikTok, 30000);
+    // Use fast retry if we were just live, slow if not
+    var delay = wasLive ? RETRY_DROPPED : RETRY_NOT_LIVE;
+    wasLive = false;
+    retryTimeout = setTimeout(connectTikTok, delay);
   });
 
   tiktok.on('error', function(err) {
     var msg = (err && err.message) ? err.message : 'unknown';
     console.warn('TikTok error: ' + msg);
-    // On error, fully destroy and reconnect
     destroyTikTok();
-    retryTimeout = setTimeout(connectTikTok, 30000);
+    retryTimeout = setTimeout(connectTikTok, RETRY_NOT_LIVE);
   });
 }
 
