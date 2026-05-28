@@ -7,14 +7,18 @@ const EULER_API_KEY = process.env.EULER_API_KEY || '';
 
 const RETRY_NOT_LIVE = 5 * 60 * 1000;
 const RETRY_DROPPED  = 30 * 1000;
+const HEARTBEAT_INTERVAL = 3 * 60 * 1000; // check every 3 minutes
 
 const wss = new WebSocketServer({ port: PORT });
 console.log('WebSocket server running on port ' + PORT);
 
 let clients = new Set();
 let retryTimeout = null;
+let heartbeatInterval = null;
 let tiktok = null;
 let wasLive = false;
+let lastMessageTime = null;
+let connectedAt = null;
 
 function broadcast(data) {
   var msg = JSON.stringify(data);
@@ -25,11 +29,38 @@ function broadcast(data) {
 }
 
 function destroyTikTok() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
   if (tiktok) {
     try { tiktok.removeAllListeners(); } catch(e) {}
     try { tiktok.disconnect(); } catch(e) {}
     tiktok = null;
   }
+  connectedAt = null;
+}
+
+function startHeartbeat() {
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
+  heartbeatInterval = setInterval(function() {
+    if (!tiktok) {
+      console.warn('Heartbeat: no tiktok object — reconnecting');
+      connectTikTok();
+      return;
+    }
+    // If connected more than 10 mins with no messages and we have clients, force reconnect
+    var now = Date.now();
+    var connectedMs = connectedAt ? now - connectedAt : 0;
+    var lastMsgMs = lastMessageTime ? now - lastMessageTime : connectedMs;
+    if (clients.size > 0 && connectedMs > 10 * 60 * 1000 && lastMsgMs > 10 * 60 * 1000) {
+      console.warn('Heartbeat: no messages for 10min with active clients — forcing reconnect');
+      destroyTikTok();
+      connectTikTok();
+    } else {
+      console.log('Heartbeat: alive, connected ' + Math.round(connectedMs/60000) + 'min, last msg ' + Math.round(lastMsgMs/60000) + 'min ago');
+    }
+  }, HEARTBEAT_INTERVAL);
 }
 
 function connectTikTok() {
@@ -55,8 +86,11 @@ function connectTikTok() {
     .then(function() {
       console.log('TikTok connected!');
       wasLive = true;
+      connectedAt = Date.now();
+      lastMessageTime = Date.now();
+      startHeartbeat();
 
-      // Debug — log ALL events to see what v2 actually emits
+      // Debug — log ALL events
       tiktok.on('*', function(eventName, data) {
         console.log('TikTok event fired:', eventName);
       });
@@ -71,6 +105,7 @@ function connectTikTok() {
 
   tiktok.on('chat', function(data) {
     try {
+      lastMessageTime = Date.now();
       var nickname = (data.user && data.user.nickname) || data.nickname || data.uniqueId || 'Unknown';
       var uniqueId = (data.user && data.user.uniqueId) || data.uniqueId || '';
       var comment = (data.data && data.data.comment) || data.comment || '';
@@ -81,6 +116,7 @@ function connectTikTok() {
 
   tiktok.on('gift', function(data) {
     try {
+      lastMessageTime = Date.now();
       if (data.giftType === 1 && !data.repeatEnd) return;
       var nickname = (data.user && data.user.nickname) || data.nickname || 'Unknown';
       var uniqueId = (data.user && data.user.uniqueId) || data.uniqueId || '';
